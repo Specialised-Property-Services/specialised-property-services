@@ -1,4 +1,3 @@
-import os
 import time
 import requests
 import streamlit as st
@@ -6,22 +5,17 @@ import pandas as pd
 from dateutil.parser import parse
 from fuzzywuzzy import fuzz
 import json
+import os
 
-# Load .env if you're using it locally
-from dotenv import load_dotenv
-load_dotenv()
-
-# Environment variables
-CLIENT_ID = os.getenv("CLIENT_ID") or "your_client_id_here"
-CLIENT_SECRET = os.getenv("CLIENT_SECRET") or "your_client_secret_here"
-# Domain for token only
-SIMPRO_DOMAIN = "https://specialisedlocksmiths.simprosuite.com"
-# Base URL for all API calls
-SIMPRO_API_BASE = "https://api-uk.simprocloud.com"  # Updated to UK
+# Streamlit Secrets (used on Streamlit Cloud)
+CLIENT_ID = st.secrets["simpro_client_id"]
+CLIENT_SECRET = st.secrets["simpro_client_secret"]
+SIMPRO_DOMAIN = f"https://{st.secrets['simpro_tenant']}.simprosuite.com"
+SIMPRO_API_BASE = "https://api-uk.simprocloud.com"
 
 MATCH_FILE = "confirmed_matches.json"
 
-# Universal retry wrapper with timeout
+# Retry wrapper for API GETs
 def safe_get(url, headers, retries=3, timeout=10):
     for attempt in range(retries):
         try:
@@ -34,6 +28,7 @@ def safe_get(url, headers, retries=3, timeout=10):
     st.error(f"❌ Failed to get data from Simpro after {retries} attempts.")
     return None
 
+# Simpro OAuth2 token request
 def get_access_token():
     token_url = f"{SIMPRO_DOMAIN}/oauth2/token"
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
@@ -65,15 +60,13 @@ def get_company_id(headers):
     st.write(f"🔗 Requesting company info from: {url}")
 
     response = safe_get(url, headers)
-
     if not response:
         return None
 
     try:
         data = response.json()
-    except Exception as e:
-        st.error("❌ Could not decode JSON from company response.")
-        st.text(response.text)
+    except:
+        st.error("❌ Could not decode company info JSON.")
         return None
 
     if not data:
@@ -84,13 +77,9 @@ def get_company_id(headers):
     return data[0]['ID']
 
 def get_all_contacts(headers):
-    st.write("📞 Starting to fetch contacts...")  # Debug step 1
-
-    try:
-        company_id = get_company_id(headers)
-        st.write(f"🏢 Company ID: {company_id}")  # Debug step 2
-    except Exception as e:
-        st.error(f"❌ Error fetching company ID: {e}")
+    st.write("📞 Fetching contacts...")
+    company_id = get_company_id(headers)
+    if not company_id:
         return []
 
     contacts = []
@@ -98,22 +87,19 @@ def get_all_contacts(headers):
 
     while True:
         url = f"{SIMPRO_API_BASE}/api/v1.0/companies/{company_id}/contacts?page={page}&pageSize=100"
-        st.write(f"📄 Fetching contacts - Page {page}")  # Debug step 3
-
+        st.write(f"📄 Page {page}")
         response = safe_get(url, headers)
-
         if not response:
             return []
 
         page_data = response.json()
         if not page_data:
-            st.info("✅ No more contacts found.")
             break
 
         contacts.extend(page_data)
         page += 1
 
-    st.success(f"✅ Retrieved {len(contacts)} contacts total.")
+    st.success(f"✅ Retrieved {len(contacts)} contacts.")
     return contacts
 
 def load_confirmed_matches():
@@ -122,11 +108,43 @@ def load_confirmed_matches():
             return json.load(f)
     return {}
 
-# --- STREAMLIT UI ---
+# Dummy contact creation (stub for now)
+def create_contact(first, last, mobile, headers):
+    st.info(f"🧪 Would create contact: {first} {last}")
+    return {"ID": f"dummy_{first}_{last}"}
+
+# Dummy site creation (stub for now)
+def create_site(job_name, address, city, postcode, cid, headers):
+    return {"ID": f"site_{cid}_{job_name}"}
+
+# Dummy job creation (stub for now)
+def create_job(site_id, cid, job_name, date, notes, job_count, headers):
+    return {"ID": f"job_{cid}_{job_name}"}
+
+# Dummy add charge (stub for now)
+def add_charge_to_job(job_id, description, charge_total, headers):
+    return True
+
+# Dummy matching logic (stub)
+def match_contact(contacts, first, last):
+    for c in contacts:
+        if c.get("FirstName", "").lower() == first.lower() and c.get("LastName", "").lower() == last.lower():
+            return c
+    return None
+
+# Dummy fuzzy match
+def fuzzy_match_contact(contacts, first, last, row_index):
+    for c in contacts:
+        if fuzz.ratio(first.lower(), c.get("FirstName", "").lower()) > 80 and \
+           fuzz.ratio(last.lower(), c.get("LastName", "").lower()) > 80:
+            return c
+    return None
+
+# --- UI ---
+
 st.title("🔐 Simpro Uploader (Streamlit Edition)")
 uploaded_file = st.file_uploader("Upload Excel File", type=[".xlsx"])
 
-# 🔧 LOAD CONFIRMED MATCHES INTO SESSION STATE (ADD NEAR THE TOP OF YOUR STREAMLIT UI CODE)
 if 'confirmed_matches' not in st.session_state:
     st.session_state.confirmed_matches = load_confirmed_matches()
 
@@ -144,7 +162,7 @@ if uploaded_file:
     for target in expected:
         match = max(headers, key=lambda h: fuzz.ratio(h.lower(), target.lower()))
         if fuzz.ratio(match.lower(), target.lower()) < 90:
-            st.error(f"Column '{target}' not found with high confidence.")
+            st.error(f"Column '{target}' not matched confidently.")
             st.stop()
         col_map[target] = match
 
@@ -154,14 +172,14 @@ if uploaded_file:
     headers_api = get_headers()
     st.write("✅ Token acquired.")
     contacts = get_all_contacts(headers_api)
-    st.success("Fetched all contacts successfully.")
+    st.success("Fetched all contacts.")
     submitted = st.button("🚀 Start Upload")
 
     if submitted:
         charge_log = []
         scheduled = {}
-        # Track number of jobs per contact per day
         daily_job_count = {}
+
         for i, row in df.iterrows():
             first = str(row[col_map['W/O First Name']]).strip()
             last = str(row[col_map['W/O Last Name']]).strip()
@@ -173,6 +191,7 @@ if uploaded_file:
             shutter = str(row[col_map['Shutter required y/n']]).strip().upper()
             locks = str(row[col_map['Lock type']]).strip()
             notes = " | ".join(filter(None, ["SHUTTER" if shutter == 'Y' else "", f"LOCKS: {locks}" if locks else ""]))
+
             try:
                 date_required = parse(str(row[col_map['Date Required']]), dayfirst=True)
             except:
@@ -185,18 +204,18 @@ if uploaded_file:
             daily_job_count[contact_key] += 1
 
             contact = match_contact(contacts, first, last) or fuzzy_match_contact(contacts, first, last, i)
-            
             if not contact:
                 contact = create_contact(first, last, mobile, headers_api)
                 if contact:
                     contacts.append(contact)
-                if not contact:
-                    st.warning(f"⚠️ Skipped contact creation for {first} {last}")
+                else:
+                    st.warning(f"⚠️ Contact creation failed for {first} {last}")
                     continue
 
             cid = contact['ID']
             scheduled.setdefault(cid, 0)
             site = create_site(job_name, address, city, postcode, cid, headers_api)
+
             if site:
                 job = create_job(site['ID'], cid, job_name, date_required, notes, scheduled[cid], headers_api)
                 if job:
@@ -204,39 +223,35 @@ if uploaded_file:
                     st.success(f"✅ Job created: {job_name} for {first} {last}")
                     scheduled[cid] += 1
 
-                    if job_id:
-                        charge_total = 0
-                        messages = []
+                    charge_total = 0
+                    messages = []
 
-                        if daily_job_count[contact_key] == 1:
-                            charge_total += 111.50
-                            messages.append("Standard daily callout (£111.50)")
-                        elif daily_job_count[contact_key] > 1 and scheduled[cid] == 1:
-                            charge_total += 223
-                            messages.append("Multiple job day flat rate (£223.00)")
+                    if daily_job_count[contact_key] == 1:
+                        charge_total += 111.50
+                        messages.append("Standard daily callout (£111.50)")
+                    elif daily_job_count[contact_key] > 1 and scheduled[cid] == 1:
+                        charge_total += 223
+                        messages.append("Multiple job day flat rate (£223.00)")
 
-                        if shutter == 'Y':
-                            charge_total += 137.50
-                            messages.append("Shutter charge (£137.50)")
+                    if shutter == 'Y':
+                        charge_total += 137.50
+                        messages.append("Shutter charge (£137.50)")
 
-                        if charge_total > 0:
-                            description = " + ".join(messages)
-                            added = add_charge_to_job(job_id, description, charge_total, headers_api)
-                            if added:
-                                st.success(f"💰 Charge added to job: {description} | Total: £{charge_total:.2f}")
-                                charge_log.append({
-                                    "Contact": f"{first} {last}",
-                                    "Job Name": job_name,
-                                    "Date": job_date_str,
-                                    "Charge Description": description,
-                                    "Total (£)": charge_total
-                                })
-                            else:
-                                st.warning("⚠️ Charge could not be added.")
-                    else:
-                        st.warning("⚠️ Job ID not found — skipping charge.")
+                    if charge_total > 0:
+                        description = " + ".join(messages)
+                        if add_charge_to_job(job_id, description, charge_total, headers_api):
+                            st.success(f"💰 Charge added: {description} | £{charge_total:.2f}")
+                            charge_log.append({
+                                "Contact": f"{first} {last}",
+                                "Job Name": job_name,
+                                "Date": job_date_str,
+                                "Charge Description": description,
+                                "Total (£)": charge_total
+                            })
+                        else:
+                            st.warning("⚠️ Charge could not be added.")
             else:
-                st.error(f"❌ Job failed: {job_name} for {first} {last}")
+                st.error(f"❌ Site creation failed: {job_name} for {first} {last}")
 
         if charge_log:
             st.write("## 💼 Charge Summary")
@@ -244,7 +259,7 @@ if uploaded_file:
         else:
             st.info("No charges were applied to any jobs.")
 
-# 🧪 Optional: Add a Test Button
+# Optional Simpro ping test
 if st.button("🌐 Test Simpro API Connection"):
     try:
         response = requests.get("https://api-uk.simprocloud.com", timeout=5)
