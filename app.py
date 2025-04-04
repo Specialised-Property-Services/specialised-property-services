@@ -273,4 +273,3 @@ if st.button("🌐 Test Simpro API Connection"):
             st.text(response.text)
     except Exception as e:
         st.error(f"❌ Could not reach Simpro API: {e}")
-
