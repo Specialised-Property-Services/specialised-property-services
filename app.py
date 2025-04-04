@@ -261,8 +261,16 @@ if uploaded_file:
 
 # Optional Simpro ping test
 if st.button("🌐 Test Simpro API Connection"):
+    headers = get_headers()
     try:
-        response = requests.get("https://api-uk.simprocloud.com", timeout=5)
-        st.success(f"✅ API responded with: {response.status_code}")
+        test_url = "https://api-uk.simprocloud.com/api/v1.0/companies?pageSize=1"
+        response = requests.get(test_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            st.success(f"✅ Connected! Company name: {data[0]['Name']} (ID: {data[0]['ID']})")
+        else:
+            st.error(f"❌ Simpro responded with status: {response.status_code}")
+            st.text(response.text)
     except Exception as e:
         st.error(f"❌ Could not reach Simpro API: {e}")
+
